@@ -647,6 +647,21 @@ class ServerSettings(BaseModel):
     start_grace: float = 4.0
 
 
+class DelegateSettings(BaseModel):
+    """The ``[delegate]`` slot: where the ask_muse tool hands heavy work to the
+    owner's main agent through the chat bridge's /api/delegate endpoint.
+    ``secret`` is the bridge's agent token (a ``${ENV}`` reference is fine).
+    Empty endpoint (the default): the tool is not offered."""
+
+    endpoint: str = ""
+    secret: str = ""
+    timeout: float = 240.0
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.endpoint.strip())
+
+
 class Settings(BaseModel):
     data_dir: Path = DEFAULT_DATA_DIR
     log_level: str = "INFO"
@@ -662,6 +677,7 @@ class Settings(BaseModel):
     gui: GUISettings = Field(default_factory=GUISettings)
     image: MediaSettings = Field(default_factory=MediaSettings)
     video: MediaSettings = Field(default_factory=MediaSettings)
+    delegate: DelegateSettings = Field(default_factory=DelegateSettings)
     hands: HandsSettings = Field(default_factory=HandsSettings)
     cloud: CloudSettings = Field(default_factory=CloudSettings)
     sync: SyncSettings = Field(default_factory=SyncSettings)

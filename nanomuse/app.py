@@ -49,6 +49,7 @@ from nanomuse.tools import (
     Terminate,
     GenerateImage,
     GenerateVideo,
+    AskMuse,
     ToolCollection,
     Triggers,
     WebFetch,
@@ -360,6 +361,8 @@ class NanoMuseApp:
             tools.add(
                 GenerateVideo(slot=s.video, llm=s.llm, vault=self.vault, workspace=ws)
             )
+        if s.delegate.configured:
+            tools.add(AskMuse(slot=s.delegate, vault=self.vault))
         return tools
 
     def browser_tool(self) -> Browser:

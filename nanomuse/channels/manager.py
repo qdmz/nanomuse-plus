@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import re
 import sys
 import time
 from collections.abc import Coroutine
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from nanomuse.background import keep_task
@@ -322,6 +324,7 @@ class ChannelManager(ChannelBus):
         if msg.is_group and msg.sender_name and text:
             text = f"{msg.sender_name}: {text}"
         thread_id = self._thread_for(msg)
+        self._journal("in", msg.channel, msg.chat_id, text)
         try:
             self.svc.send(thread_id, text, files=paths or None)
         except (ValueError, PermissionError) as exc:
@@ -378,6 +381,27 @@ class ChannelManager(ChannelBus):
         )
 
     # ------------------------------------------------------------------ outbound helpers
+    def _journal(self, direction: str, channel: str, chat_id: str, preview: str) -> None:
+        """Append one line to <data_dir>/channel-events.jsonl — a durable,
+        greppable record of what the channels received, sent and failed on, so
+        'did the bot get/send that message?' never needs a log spelunk again.
+        Best-effort by design: journaling must never break messaging."""
+        try:
+            path = self.svc.data_dir / "channel-events.jsonl"
+            entry = {
+                "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+                "dir": direction,
+                "channel": channel,
+                "chat": chat_id,
+                "text": " ".join(str(preview or "").split())[:80],
+            }
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            if path.stat().st_size > 2_000_000:  # keep one rotated backup
+                path.replace(path.with_suffix(".jsonl.1"))
+        except Exception:  # noqa: BLE001
+            pass
+
     async def _send(
         self, channel: str, chat_id: str, text: str, files: list[str] | None = None
     ) -> None:
@@ -386,8 +410,10 @@ class ChannelManager(ChannelBus):
             return
         try:
             await ch.send(chat_id, text, files=files)
+            self._journal("out", channel, chat_id, text or f"[{len(files or [])} file(s)]")
         except Exception as exc:  # noqa: BLE001 — a vendor refusal; the app shows it
             logger.warning("channel {}: send to {} failed: {}", channel, chat_id, exc)
+            self._journal("error", channel, chat_id, str(exc))
             self._set(channel, "error", _short(exc))
 
     def _live_for(self, thread: str) -> _Live | None:
@@ -456,8 +482,10 @@ class ChannelManager(ChannelBus):
                     await channel.send(route[1], "", files=files)
             elif text.strip() or files:
                 await channel.send(route[1], text, files=files)
+            self._journal("out", route[0], route[1], text or f"[{len(files or [])} file(s)]")
         except Exception as exc:  # noqa: BLE001
             logger.warning("channel {}: reply to {} failed: {}", route[0], route[1], exc)
+            self._journal("error", route[0], route[1], str(exc))
             self._set(route[0], "error", _short(exc))
 
     async def _set_typing(self, thread: str, on: bool) -> None:

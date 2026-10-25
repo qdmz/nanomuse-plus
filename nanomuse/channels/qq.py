@@ -54,7 +54,7 @@ from nanomuse.logger import logger
 
 API = "https://api.bot.qq.com"
 WS_URL = "wss://api.bot.qq.com/websocket/"
-INTENTS = (1 << 25) | (1 << 30)  # C2C + group @ events, as the platform grants them
+INTENTS = (1 << 24) | (1 << 25) | (1 << 30)  # group members (24) + C2C/group events (25) + public guild (30)
 TEXT_LIMIT = 3000
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -186,6 +186,26 @@ class QQChannel(Channel):
             "mod_exempt", "群管·豁免成员",
             help="逗号分隔的 member_openid，这些成员不被群管处置",
         ),
+        Field(
+            "keyword_replies", "关键词自动回复",
+            help="每行一条：关键词1|关键词2 => 回复内容；群里有人发到关键词即自动回复，{name} 替换为发言者昵称",
+        ),
+        Field(
+            "welcome_text", "新人欢迎语",
+            help="留空关闭；新成员进群时自动在群里发送这段话",
+        ),
+        Field(
+            "judge_endpoint", "群管·AI复核地址",
+            help="OpenAI 兼容接口根地址（如 https://example.com/v1）；留空关闭 AI 复核。规则拿不准的灰区消息（只命中一个弱广告词、无链接）会交给复核模型判断",
+        ),
+        Field(
+            "judge_model", "群管·AI复核模型",
+            help="便宜的小模型即可，如 gpt-4o-mini / qwen-turbo；与复核地址配套",
+        ),
+        Field(
+            "judge_key", "群管·AI复核密钥", "secret",
+            help="复核接口的 API Key",
+        ),
     )
 
     def __init__(self, settings: dict[str, Any]):
@@ -203,6 +223,10 @@ class QQChannel(Channel):
         self._bot_name = ""
         self._mod_offenses: dict[tuple[str, str], list[float]] = {}  # (group, member) -> offense times
         self._mod_recent: dict[tuple[str, str], list[float]] = {}  # (group, member) -> recent msg times
+        self._kw_last: dict[tuple[str, int], float] = {}  # (chat_id, rule index) -> last reply time
+        self._mod_log: list[dict[str, Any]] = []  # recent moderation events (persisted)
+        self._ack_tasks: dict[str, asyncio.Task[None]] = {}  # group chats awaiting a slow reply
+        self._load_mod_state()
 
     # ------------------------------------------------------------------ token / REST
     async def _access_token(self) -> str:
@@ -336,6 +360,19 @@ class QQChannel(Channel):
             return
         if self.bus is None:
             return
+        if t in ("GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE", "GROUP_JOIN_REQUEST"):
+            group = str(d.get("group_openid") or "")
+            member = str(d.get("member_openid") or "")
+            action = {"GROUP_MEMBER_ADD": "joined", "GROUP_MEMBER_REMOVE": "left"}.get(t, "join-request")
+            logger.info("qq: group member {} in {}: {}", action, group[-6:], member[-6:])
+            if t == "GROUP_MEMBER_ADD" and group:
+                welcome = str(self.settings.get("welcome_text") or "").strip()
+                if welcome:
+                    try:
+                        await self.send(f"g:{group}", welcome)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("qq: welcome send failed in {}: {}", group[-6:], exc)
+            return
         if t == "C2C_MESSAGE_CREATE":
             author = d.get("author") or {}
             openid = str(author.get("user_openid") or "")
@@ -377,6 +414,8 @@ class QQChannel(Channel):
                 )
                 if await self._moderate(chat_id, group, openid, sender_name, str(d.get("id") or ""), text):
                     return
+                if await self._keyword_reply(chat_id, text, sender_name):
+                    return
             files = await self._attachments(d) if is_at else []
             if is_at and text.startswith("@"):
                 # group @-messages arrive prefixed with the @-mention of the bot
@@ -395,6 +434,10 @@ class QQChannel(Channel):
                     message_id=str(d.get("id") or ""),
                 )
             )
+            if is_at:
+                # only an @ is actually answered; a plain full message is
+                # dropped by the mention policy and must never get an ack
+                self._arm_ack(chat_id)
 
     def _remember(self, d: dict[str, Any], chat_id: str) -> None:
         if d.get("id"):
@@ -431,14 +474,26 @@ class QQChannel(Channel):
     # APIs are invite-only, see _moderate. Needs the bot to be a group admin
     # and to have full-message access.
     _MOD_STRONG = (
-        "博彩", "菠菜", "赌场", "赌博", "棋牌", "彩票", "刷单", "裸聊", "约炮",
-        "跑分", "洗钱", "卖号", "代充", "黑产", "四件套", "六合彩", "时时彩", "网赌",
+        # 赌博
+        "博彩", "菠菜", "赌场", "赌博", "网赌", "线上赌场", "百家乐", "六合彩",
+        "时时彩", "北京赛车", "幸运飞艇", "棋牌游戏", "真人视讯", "体育投注", "外围赌球",
+        # 色情
+        "裸聊", "约炮", "嫖娼", "卖淫", "援交", "约啪", "色情服务", "小妹上门", "学生妹",
+        # 诈骗 / 黑产
+        "杀猪盘", "刷单", "跑分", "洗钱", "四件套", "银行卡出售", "手机卡出售",
+        "实名账号出售", "卖号", "出售账号", "黑产", "诈骗教程", "钓鱼网站",
+        # 违禁品 / 假证
+        "冰毒", "大麻出售", "迷药", "听话水", "出售枪支", "办假证", "代开发票", "发票代开",
+        # 黑产代充 / 外挂
+        "黑卡代充", "低价代充", "游戏外挂", "透视挂", "作弊器",
     )
     _MOD_WEAK = (
-        "加微信", "加我微信", "私聊我", "兼职", "副业", "日赚", "月入", "返利",
-        "招商", "代理加盟", "免费领取", "限时优惠", "点击链接", "带你赚钱",
-        "投资理财", "微信号", "扫码进群", "拉人头", "v信", "薇信",
+        "加微信", "加我微信", "加我", "私聊我", "扫码进群", "免费领取", "限时优惠",
+        "点击链接", "日赚", "月入", "躺赚", "稳赚", "返利", "招商", "代理加盟",
+        "带你赚钱", "投资理财", "保本高收益", "内部渠道", "名额有限", "先到先得",
+        "微信号", "拉人头", "v信", "薇信", "兼职", "副业",
     )
+    _MOD_CONTACT = re.compile(r"(?:微信|vx|v信|薇信)\s*[:：]?\s*[a-zA-Z][a-zA-Z0-9_-]{4,}")
     _MOD_URL = re.compile(
         r"https?://|www\.|\b[a-z0-9][a-z0-9-]*\.(?:com|cn|net|top|xyz|vip|cc|io|me|link|club|online|site|shop|fun|icu)\b",
         re.IGNORECASE,
@@ -454,17 +509,121 @@ class QQChannel(Channel):
         raw = str(self.settings.get("mod_keywords") or "").replace("，", ",")
         return tuple(w.strip() for w in raw.split(",") if w.strip())
 
-    def _mod_is_ad(self, text: str) -> str | None:
+    def _mod_weak_hits(self, text: str) -> set[str]:
         extra = self._mod_extra_words()
+        weak = {w for w in self._MOD_WEAK + extra if w.lower() in text.lower()}
+        if self._MOD_CONTACT.search(text):
+            weak.add("微信号")
+        return weak
+
+    def _mod_is_ad(self, text: str) -> str | None:
         for word in self._MOD_STRONG:
             if word in text:
                 return f"关键词「{word}」"
-        weak = [w for w in self._MOD_WEAK + extra if w.lower() in text.lower()]
+        weak = self._mod_weak_hits(text)
         if len(weak) >= 2:
-            return "广告词组合：" + "、".join(weak[:3])
+            return "广告词组合：" + "、".join(sorted(weak)[:3])
         if weak and self._MOD_URL.search(text):
-            return f"链接+广告词「{weak[0]}」"
+            return f"链接+广告词「{sorted(weak)[0]}」"
         return None
+
+    # ---------------------------------------------------------- mod state on disk
+    @staticmethod
+    def _mod_state_path() -> Path:
+        import os
+
+        from nanomuse.config import DEFAULT_DATA_DIR
+
+        root = Path(os.environ.get("NANOMUSE_DATA_DIR") or DEFAULT_DATA_DIR)
+        return root / "channels" / "qq_mod_state.json"
+
+    def _load_mod_state(self) -> None:
+        try:
+            raw = json.loads(self._mod_state_path().read_text(encoding="utf-8"))
+            now = time.time()
+            for group, member, times in raw.get("offenses", []):
+                keep = [float(t) for t in times if now - float(t) < self._MOD_OFFENSE_WINDOW]
+                if keep:
+                    self._mod_offenses[(str(group), str(member))] = keep
+            self._mod_log = [e for e in raw.get("log", []) if isinstance(e, dict)][-50:]
+        except Exception:  # noqa: BLE001 — no state yet, or a corrupt file: start fresh
+            pass
+
+    def _save_mod_state(self) -> None:
+        try:
+            path = self._mod_state_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "offenses": [[g, m, ts] for (g, m), ts in self._mod_offenses.items()],
+                "log": self._mod_log[-50:],
+            }
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+        except Exception as exc:  # noqa: BLE001 — persistence must never break moderation
+            logger.warning("qq mod: state save failed: {}", exc)
+
+    # ---------------------------------------------------------- AI gray-zone judge
+    async def _judge_gray(self, text: str) -> str | None:
+        """Ask the configured cheap model about a gray-zone message (exactly one
+        weak ad signal, no link). Returns an offense reason or None. Fail-open:
+        unconfigured, a timeout, or a non-AD verdict all mean no offense."""
+        endpoint = str(self.settings.get("judge_endpoint") or "").strip().rstrip("/")
+        model = str(self.settings.get("judge_model") or "").strip()
+        if not endpoint or not model:
+            return None
+        weak = self._mod_weak_hits(text)
+        if len(weak) != 1 or self._MOD_URL.search(text):
+            return None
+        key = str(self.settings.get("judge_key") or "").strip()
+        try:
+            if self._http is None:
+                self._http = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=15.0))
+            r = await self._http.post(
+                f"{endpoint}/chat/completions",
+                headers={"Authorization": f"Bearer {key}"} if key else {},
+                json={
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "你是QQ群广告审核员。判断消息是不是广告、引流或诈骗推广。只回答 AD 或 OK，不要解释。",
+                        },
+                        {"role": "user", "content": text[:300]},
+                    ],
+                    "max_tokens": 4,
+                    "temperature": 0,
+                },
+                timeout=10.0,
+            )
+            verdict = str(r.json()["choices"][0]["message"]["content"] or "").strip().upper()
+        except Exception as exc:  # noqa: BLE001 — fail open
+            logger.warning("qq mod: AI judge unavailable: {}", exc)
+            return None
+        if verdict.startswith("AD"):
+            logger.info("qq mod: AI judge flagged a gray message (weak: {})", sorted(weak)[0])
+            return f"AI复核判定广告（弱信号「{sorted(weak)[0]}」）"
+        return None
+
+    # ---------------------------------------------------------- slow-reply ack
+    def _arm_ack(self, chat_id: str) -> None:
+        """If no reply goes out to this group chat within 20s, send a brief
+        'working on it' note inside the passive window, so a slow run (media
+        generation, a delegated task) never looks like silence."""
+        old = self._ack_tasks.pop(chat_id, None)
+        if old is not None:
+            old.cancel()
+
+        async def _wait() -> None:
+            try:
+                await asyncio.sleep(20.0)
+            except asyncio.CancelledError:
+                return
+            self._ack_tasks.pop(chat_id, None)
+            with suppress(Exception):
+                await self.send(chat_id, "⏳ 正在处理，请稍候…")
+
+        self._ack_tasks[chat_id] = asyncio.create_task(_wait())
 
     async def _moderate(
         self, chat_id: str, group: str, openid: str, sender_name: str, msg_id: str, text: str
@@ -487,6 +646,8 @@ class QQChannel(Channel):
         rule = self._mod_is_ad(text) if text else None
         if rule is None and len(recent) >= self._MOD_FLOOD_LIMIT:
             rule = f"刷屏（{self._MOD_FLOOD_WINDOW:.0f} 秒内 {len(recent)} 条）"
+        if rule is None and text:
+            rule = await self._judge_gray(text)
         if rule is None:
             return False
         self._mod_recent[key] = []
@@ -498,6 +659,13 @@ class QQChannel(Channel):
             "qq mod: offense #{} by {} in group {} ({}): {!r}",
             count, sender_name or openid, group[-6:], rule, text[:60],
         )
+        self._mod_log.append(
+            {
+                "ts": now, "group": group, "member": openid, "name": sender_name,
+                "rule": rule, "count": count, "text": text[:60],
+            }
+        )
+        self._save_mod_state()
         recalled = False
         if msg_id:
             try:
@@ -525,6 +693,7 @@ class QQChannel(Channel):
                 logger.warning("qq mod: remove failed for {}: {}", openid, exc)
             if kicked:
                 self._mod_offenses.pop(key, None)
+                self._save_mod_state()
                 logger.info("qq mod: removed {} from group {}", openid, group[-6:])
                 notice = f"🚫 {who} 多次发布广告/违规信息（{rule}），已移出本群。"
             else:
@@ -537,12 +706,50 @@ class QQChannel(Channel):
         else:
             warn = f"⚠️ {who} 请勿在本群发布广告或刷屏（{rule}），"
             warn += "本次消息已撤回，并记一次违规；" if recalled else "已记一次违规；"
-            warn += "再次违规将通知群主移出本群。"
+            warn += "再次违规将被移出本群。"
             try:
                 await self.send(chat_id, warn)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("qq mod: warning send failed: {}", exc)
         return True
+
+    # ------------------------------------------------------------------ keyword auto-replies
+    _KW_COOLDOWN = 60.0  # per group + rule, so a hot keyword cannot spam the group
+
+    def _kw_rules(self) -> list[tuple[list[str], str]]:
+        rules: list[tuple[list[str], str]] = []
+        for line in str(self.settings.get("keyword_replies") or "").splitlines():
+            line = line.strip()
+            if not line or "=>" not in line:
+                continue
+            left, reply = line.split("=>", 1)
+            words = [w.strip() for w in re.split(r"[|｜]", left) if w.strip()]
+            reply = reply.strip()
+            if words and reply:
+                rules.append((words, reply))
+        return rules
+
+    async def _keyword_reply(self, chat_id: str, text: str, sender_name: str) -> bool:
+        """Answer a full group message from the keyword rules. True = answered."""
+        if not text:
+            return False
+        low = text.lower()
+        now = time.time()
+        for idx, (words, reply) in enumerate(self._kw_rules()):
+            if not any(w.lower() in low for w in words):
+                continue
+            key = (chat_id, idx)
+            if now - self._kw_last.get(key, 0.0) < self._KW_COOLDOWN:
+                continue
+            self._kw_last[key] = now
+            try:
+                await self.send(chat_id, reply.replace("{name}", f"@{sender_name}" if sender_name else ""))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("qq: keyword reply failed in {}: {}", chat_id, exc)
+                return False
+            logger.info("qq: keyword reply #{} answered in {}", idx, chat_id[-6:])
+            return True
+        return False
 
     @staticmethod
     def _passive_window(chat_id: str) -> float:
@@ -557,6 +764,9 @@ class QQChannel(Channel):
         return next(counter)
 
     async def send(self, chat_id: str, text: str, *, files: list[str] | None = None) -> str:
+        pending = self._ack_tasks.pop(chat_id, None)
+        if pending is not None and pending is not asyncio.current_task():
+            pending.cancel()
         is_group = chat_id.startswith("g:")
         target = chat_id[2:] if is_group else chat_id
         base = f"/v2/groups/{target}/messages" if is_group else f"/v2/users/{target}/messages"

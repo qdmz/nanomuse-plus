@@ -2,6 +2,7 @@ from nanomuse.tools.base import BaseTool, CallAssessment, ToolCollection, safe_e
 from nanomuse.tools.browser import Browser, playwright_available
 from nanomuse.tools.calendar_tool import Calendar
 from nanomuse.tools.contacts_tool import Contacts
+from nanomuse.tools.delegate import AskMuse
 from nanomuse.tools.email_tool import ReadEmails, SendEmail
 from nanomuse.tools.files import Files
 from nanomuse.tools.media import GenerateImage, GenerateVideo

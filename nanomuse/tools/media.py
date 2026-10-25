@@ -150,6 +150,16 @@ class GenerateImage(_MediaTool):
                 r = await http.post(
                     f"{base}/images/generations", json=body, headers=headers
                 )
+                for _ in range(2):  # busy / rate-limited: worth two more tries
+                    if r.status_code not in (429, 503):
+                        break
+                    logger.info(
+                        "image provider busy ({}); trying again in 10s", r.status_code
+                    )
+                    await asyncio.sleep(10.0)
+                    r = await http.post(
+                        f"{base}/images/generations", json=body, headers=headers
+                    )
                 if r.status_code >= 400:
                     return ToolResult.fail(
                         f"the image provider answered {r.status_code}: {r.text[:300]}"

@@ -53,14 +53,25 @@ docker compose up -d --build app
 - **飞书**：上游原生扫码创建应用，设置页点登录扫码即可。
 - 每个渠道连上后，让对方先发一条消息拿到**配对码**，在设置页批准。
 
+### 互通与群管增强（2026-10-25）
+
+- **ask_muse 互通工具**（`nanomuse/tools/delegate.py`，`[delegate]` 配置段）：把超出自身能力的重活（服务器运维、部署、深度搜索等）委托给机主的主 Agent（小默思），经机主聊天桥的 `/api/delegate` 端点提交、等待答复后转述给用户；未配置 endpoint 时工具不出现。
+- **QQ 群管状态落盘**：违规计数与处置日志写入 `<data_dir>/channels/qq_mod_state.json`，重启不丢。
+- **QQ 群管 AI 复核**：规则灰区消息（仅命中一个弱广告词、无链接）可交给设置页配置的便宜模型（复核地址/模型/密钥三件套）判定，复核不可用时自动放行。
+- **群聊慢回复占位**：群 @ 后 20 秒仍未出回复，先在被动窗口内发「⏳ 正在处理，请稍候…」，长任务不再像石沉大海。
+- **渠道事件日志**：`channels/manager.py` 把每条渠道入站/出站/失败写入 `<data_dir>/channel-events.jsonl`（2MB 轮转一份备份），排查有据可查。
+- **图片生成重试**：供应商返回 429/503 时自动退避重试两次（视频提交本就有重试）。
+
 ## 与上游的差异文件
 
 ```
 nanomuse/channels/qq.py        新增（QQ 适配器 + 扫码绑定）
 nanomuse/channels/wechat.py    新增（微信 iLink 适配器 + 扫码登录）
 nanomuse/channels/yuanbao.py   新增（元宝适配器，含 COS 媒体上传）
-nanomuse/channels/manager.py   修改（注册三渠道 + 扫码登录通用化）
+nanomuse/channels/manager.py   修改（注册三渠道 + 扫码登录通用化 + 渠道事件日志）
 nanomuse/tools/media.py        新增（图片/视频生成工具）
+nanomuse/tools/delegate.py     新增（ask_muse 互通委托工具）
+nanomuse/config.py             修改（追加 [delegate] 配置段）
 nanomuse/tools/__init__.py     修改（导出新工具）
 nanomuse/app.py                修改（注册新工具）
 docker-compose.yml             修改（WITH_BROWSER=1）
