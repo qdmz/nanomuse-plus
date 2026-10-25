@@ -362,7 +362,7 @@ class NanoMuseApp:
                 GenerateVideo(slot=s.video, llm=s.llm, vault=self.vault, workspace=ws)
             )
         if s.delegate.configured:
-            tools.add(AskMuse(slot=s.delegate, vault=self.vault))
+            tools.add(AskMuse(slot=s.delegate, vault=self.vault, workspace=ws))
         return tools
 
     def browser_tool(self) -> Browser:
