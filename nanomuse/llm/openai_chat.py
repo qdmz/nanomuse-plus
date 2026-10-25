@@ -300,7 +300,9 @@ class OpenAIChatLLM(BaseLLM):
                         if tc.function.arguments:
                             acc["arguments"] += tc.function.arguments
         except Exception as exc:
-            if content_parts:
+            # what the person already saw is not shown twice: text, or the thinking
+            # streamed live (the reasoning callback is set only while it is displayed)
+            if content_parts or (reasoning_parts and on_reasoning_delta is not None):
                 raise PartialStreamError(
                     "the model stream failed after visible text was shown; it was not retried"
                 ) from exc

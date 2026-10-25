@@ -716,7 +716,12 @@ class HubService:
             ok = self.svc.decide(approval_id, bool(call.args.get("allow")), "once")
             await call.result({"ok": ok})
             return
-        if not self.settings.hub.remote_control and call.action != "info":
+        if not self.settings.hub.remote_control:
+            if call.action == "info":
+                # the device is seen, not operated: its name and system, nothing a caller
+                # would need to drive it (docs/hub.md)
+                await call.result(actions.info(operable=False))
+                return
             await call.fail(
                 "not_allowed", f"{self.device_name} is set not to be operated from other devices"
             )

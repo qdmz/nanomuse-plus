@@ -17,6 +17,7 @@ as read from the screenshot — and that is what is assessed and logged.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ConfigDict
@@ -274,12 +275,20 @@ class PhoneAct(BaseTool):
                 params.update(direction=direction, distance=max(0.1, min(0.9, distance)))
                 start = _point(kwargs, "x", "y")
                 if start is not None:
+                    if screen is not None and not inside(start, screen, PHONE):
+                        return ToolResult.fail(
+                            f"({start[0]:g},{start[1]:g}) is outside the {screen.width}×{screen.height} screen"
+                        )
                     params["x"], params["y"] = start
             else:
                 end = _point(kwargs, "x2", "y2")
                 if end is None:
                     return ToolResult.fail(
                         "`swipe` needs `x2`/`y2` (where the finger ends) or a `direction`"
+                    )
+                if screen is not None and not inside(end, screen, PHONE):
+                    return ToolResult.fail(
+                        f"({end[0]:g},{end[1]:g}) is outside the {screen.width}×{screen.height} screen"
                     )
                 params["x2"], params["y2"] = end
         if action == "type":
@@ -293,6 +302,10 @@ class PhoneAct(BaseTool):
             )
             focus = _point(kwargs, "x", "y")
             if focus is not None:
+                if screen is not None and not inside(focus, screen, PHONE):
+                    return ToolResult.fail(
+                        f"({focus[0]:g},{focus[1]:g}) is outside the {screen.width}×{screen.height} screen"
+                    )
                 params["x"], params["y"] = focus
         if action == "open_app":
             app = str(kwargs.get("app") or "").strip()
@@ -342,12 +355,17 @@ class PhoneAct(BaseTool):
 
 
 def _point(args: dict[str, Any], kx: str, ky: str) -> tuple[float, float] | None:
+    """The two numbers, or None when either is missing or is not a finite number (NaN and
+    infinity would pass every comparison and reach the device as they are)."""
     if args.get(kx) is None or args.get(ky) is None:
         return None
     try:
-        return float(args[kx]), float(args[ky])
+        x, y = float(args[kx]), float(args[ky])
     except (TypeError, ValueError):
         return None
+    if not (math.isfinite(x) and math.isfinite(y)):
+        return None
+    return x, y
 
 
 class PhoneTask(BaseTool):

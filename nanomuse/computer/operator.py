@@ -44,6 +44,7 @@ from typing import Any
 
 from nanomuse.computer.coords import PICTURE_MAX_PIXELS, picture_size
 from nanomuse.computer.hands import HandsUnavailable, open_application
+from nanomuse.local_http import local_open
 from nanomuse.logger import logger
 
 URL_ENV = "NANOMUSE_OPERATOR_URL"
@@ -108,7 +109,7 @@ class OperatorClient:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # noqa: S310 — loopback, our own server
+            with local_open(req, timeout=self.timeout) as resp:
                 raw = resp.read(MAX_BODY)
         except urllib.error.HTTPError as exc:
             detail = ""

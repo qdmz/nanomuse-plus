@@ -75,7 +75,9 @@ class Goals(BaseTool):
         gid = args.get("goal_id") or ""
         if action == "create":
             # a goal is work the model takes up again at every check-in: creating one
-            # changes state (strict mode asks); the bookkeeping actions stay safe
+            # changes state (strict mode asks); so do closing or abandoning it and
+            # rewriting what it is (`set_status`, `update`); the step-by-step bookkeeping
+            # of the plan (`update_step`, `add_step`, `note`, `propose`) stays safe
             a.risk = RiskLevel.MODERATE
             detail = str(args.get("title") or "")[:80]
         elif action == "update_step":
@@ -85,11 +87,13 @@ class Goals(BaseTool):
         elif action == "propose":
             detail = f"{gid}: {str(args.get('note') or '')[:60]}"
         elif action == "update":
+            a.risk = RiskLevel.MODERATE
             changed = [
                 k for k in ("title", "description", "category", "due", "check_in") if k in args
             ]
             detail = f"{gid}: {', '.join(changed)}"
         elif action == "set_status":
+            a.risk = RiskLevel.MODERATE
             detail = f"{gid} → {args.get('status')}"
         else:
             detail = gid or str(args.get("status") or args.get("category") or "")

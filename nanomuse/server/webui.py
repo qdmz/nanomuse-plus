@@ -152,6 +152,13 @@ class WebUI:
         card = self._browser_card.pop(thread, None)
         if card is not None:
             self.patch(thread, card, status="done", updated_ts=now_iso())
+        # a bubble still streaming when the run ended without a message (the model call
+        # failed after its first words, the person stopped it): closed here, so it does
+        # not sit open in the page or take the next run's words
+        sid = self._stream_ids.pop(thread, None)
+        self._stream_buf.pop(thread, None)
+        if sid is not None:
+            self.bus.publish({"kind": "stream_end", "thread": thread, "id": sid, "discard": True})
 
     # ------------------------------------------------------------------ browser view
     def on_browser_frame(self, frame: BrowserFrame) -> None:

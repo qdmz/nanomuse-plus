@@ -73,6 +73,7 @@ def agent_env(agent: str, source: dict[str, str] | None = None) -> dict[str, str
 
 RUN_TIMEOUT_S = 20 * 60
 OUTPUT_LIMIT = 200_000  # characters of agent text kept per run
+STOP_GRACE_S = 5.0  # after a stop's SIGTERM, how long before the tree is killed
 
 OnEvent = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -106,6 +107,8 @@ class Run:
     process: asyncio.subprocess.Process | None = None
     # the message being streamed (Cursor sends deltas, then the whole message)
     current: str = ""
+    # the wind-down a stop() scheduled (kept so it is not collected half-way)
+    _finish: asyncio.Task[None] | None = field(default=None, repr=False, compare=False)
 
     def commit(self) -> None:
         if self.current:
@@ -131,18 +134,25 @@ class Run:
         }
 
     def stop(self) -> bool:
+        """Ask the agent to stop: SIGTERM to its process group (the agent and the helpers it
+        forked). What ignores it is killed a few seconds later by :func:`_wait_exit`, which
+        every path out of :func:`start_run` goes through: ``_finish`` is scheduled here so a
+        stop from the API ends the run too, not only a stop from the chat that waited."""
         p = self.process
         if p is None or p.returncode is not None:
             return False
         try:
             if sys.platform != "win32":
-                # the whole process group: the agent and the helpers it forked
                 os.killpg(p.pid, signal.SIGTERM)
             else:
-                p.terminate()
+                # Windows has no process-group signal: the tree goes at once
+                kill_tree(p)
         except (ProcessLookupError, PermissionError, OSError):
             return False
         self.status = "stopped"
+        with contextlib.suppress(RuntimeError):  # no loop: a test calling stop() cold
+            loop = asyncio.get_running_loop()
+            self._finish = loop.create_task(_wait_exit(p, grace_s=STOP_GRACE_S), name="coding-stop")
         return True
 
 
@@ -546,7 +556,13 @@ async def start_run(
                     with contextlib.suppress(asyncio.CancelledError):
                         await err_task
         except TimeoutError:
+            # the agent and its helpers go (SIGTERM, then the kill after STOP_GRACE_S), our
+            # ends of its pipes are released and nothing of ours keeps reading them
             run.stop()
+            if err_task is not None and not err_task.done():
+                err_task.cancel()
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(_wait_exit(proc, grace_s=STOP_GRACE_S))
             run.status, run.error, run.ended_at = "failed", "the agent took too long", time.time()
             await emit(RunEvent("error", run.error))
             return run
@@ -558,7 +574,7 @@ async def start_run(
             if err_task is not None and not err_task.done():
                 err_task.cancel()
             with contextlib.suppress(BaseException):
-                await asyncio.shield(_wait_exit(proc, grace_s=5))
+                await asyncio.shield(_wait_exit(proc, grace_s=STOP_GRACE_S))
             if run.status != "stopped":
                 run.status = "stopped"
             run.ended_at = time.time()

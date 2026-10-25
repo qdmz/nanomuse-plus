@@ -9,6 +9,7 @@ user can fire off several requests without waiting for the last one to finish.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import mimetypes
 import re
@@ -1927,11 +1928,24 @@ class MuseService:
         return fired or item
 
     def _mail_mark(self) -> str:
-        """The meta key of the inbox high-water mark — one per mailbox, so a changed
-        account starts fresh instead of replaying by UID."""
+        """The meta key of the inbox high-water mark: one per mailbox, so a changed account
+        starts fresh instead of replaying by UID. The mailbox is named by a hash of the host
+        and the address: the address lives in the vault, and a key in the triggers database
+        is not where it gets written out in clear. A mark written by an earlier version
+        under the address itself is moved to the hashed key on the way."""
         email = self.settings.connectors.email
         account = self.app.vault.resolve(email.address, strict=False) or email.address
-        return f"mail_uid:{email.imap_host}:{account}"
+        digest = hashlib.sha256(f"{email.imap_host}\n{account}".encode()).hexdigest()[:24]
+        mark = f"mail_uid:{email.imap_host}:{digest}"
+        legacy = f"mail_uid:{email.imap_host}:{account}"
+        if legacy != mark:
+            store = self.app.triggers
+            old = store.get_meta(legacy, "")
+            if old:
+                if not store.get_meta(mark, ""):
+                    store.set_meta(mark, old)
+                store.delete_meta(legacy)
+        return mark
 
     async def _poll_mail(self) -> None:
         """Look at the inbox for the mail triggers, every ``mail_poll_minutes`` while at

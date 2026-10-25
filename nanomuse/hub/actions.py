@@ -56,21 +56,31 @@ def shell_name() -> str:
     return os.environ.get("SHELL", "/bin/sh")
 
 
-def info(extra_actions: tuple[str, ...] = ()) -> dict[str, Any]:
-    return {
+def info(extra_actions: tuple[str, ...] = (), *, operable: bool = True) -> dict[str, Any]:
+    """What this computer says about itself to another device of the account. With remote
+    control off (``operable=False``) it is the device's name, system and software only:
+    the account name, the home directory, the working directory and the shell are what a
+    caller would need to operate it, and the person here said no to that."""
+    out: dict[str, Any] = {
         "name": socket.gethostname(),
         "kind": "computer",
         "os": platform.system(),
         "os_version": platform.release(),
         "arch": platform.machine(),
-        "user": getpass.getuser(),
-        "home": str(Path.home()),
-        "cwd": os.getcwd(),
-        "shell": shell_name(),
-        "python": platform.python_version(),
         "runtime": __version__,
-        "actions": [*ACTIONS, *extra_actions],
+        "actions": [*ACTIONS, *extra_actions] if operable else ["info"],
     }
+    if operable:
+        out.update(
+            {
+                "user": getpass.getuser(),
+                "home": str(Path.home()),
+                "cwd": os.getcwd(),
+                "shell": shell_name(),
+                "python": platform.python_version(),
+            }
+        )
+    return out
 
 
 def _text(b: bytes) -> str:

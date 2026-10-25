@@ -173,7 +173,7 @@ class ReminderBody(BaseModel):
 
 
 class TriggerBody(BaseModel):
-    kind: str = Field(pattern="^(mail|event|hook)$")
+    kind: str = Field(pattern="^(mail|event|hook|device)$")
     text: str = Field(min_length=1, max_length=2000)
     match: str = Field(default="", max_length=200)
     lead_minutes: int = Field(default=30, ge=0, le=1440)
@@ -831,7 +831,8 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
             "mail": "A test: you pressed Run now, as if a matching mail had just arrived (none did)",
             "event": "A test: you pressed Run now, as if a matching event were about to start",
             "hook": "A test: you pressed Run now, as if the webhook had been called (empty body)",
-        }[item.kind]
+            "device": "A test: you pressed Run now, as if the device had just come online (it did not)",
+        }.get(item.kind, "A test: you pressed Run now")
         try:
             fired = svc.fire_trigger(
                 trigger_id, what=what, key=f"test:{secrets.token_hex(4)}", title="test run"
@@ -1626,10 +1627,20 @@ def create_app(settings: Settings, service: MuseService | None = None) -> FastAP
     async def import_contacts(
         request: Request, name: str = Query("", max_length=40)
     ) -> dict[str, Any]:
-        """The text of a ``.vcf`` file as the request body (no multipart needed; 16 MB max)."""
-        raw = await request.body()
-        if len(raw) > 16 * 1024 * 1024:
+        """The text of a ``.vcf`` file as the request body (no multipart needed; 16 MB max,
+        checked as it arrives: a larger file is refused before it is all in memory)."""
+        limit = 16 * 1024 * 1024
+        declared = request.headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > limit:
             raise HTTPException(413, "the file is larger than 16 MB")
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in request.stream():
+            total += len(chunk)
+            if total > limit:
+                raise HTTPException(413, "the file is larger than 16 MB")
+            chunks.append(chunk)
+        raw = b"".join(chunks)
         try:
             return await conn.import_contacts(name, raw.decode("utf-8", errors="replace"))
         except ValueError as exc:

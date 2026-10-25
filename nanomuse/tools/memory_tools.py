@@ -43,6 +43,8 @@ class Remember(BaseTool):
 
     def assess(self, args: dict[str, Any]) -> CallAssessment:
         a = super().assess(args)
+        # what is remembered stays and shapes every later turn: a change, not a read
+        a.risk = RiskLevel.MODERATE
         verb = "update memory" if args.get("replaces") else "remember"
         a.summary = f"{verb}: {_short(args.get('content'))}"
         return a

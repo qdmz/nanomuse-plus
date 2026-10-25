@@ -293,6 +293,7 @@ class OpenAIResponsesLLM(BaseLLM):
         think = ThinkStreamFilter()
         final: Any = None
         streamed: list[str] = []
+        shown_reasoning = False
         try:
             async for event in stream:
                 etype = getattr(event, "type", "")
@@ -308,6 +309,7 @@ class OpenAIResponsesLLM(BaseLLM):
                 ):
                     piece = getattr(event, "delta", "") or ""
                     if piece and on_reasoning_delta:
+                        shown_reasoning = True
                         on_reasoning_delta(piece)
                 elif etype in ("response.completed", "response.incomplete"):
                     final = getattr(event, "response", None)
@@ -315,7 +317,8 @@ class OpenAIResponsesLLM(BaseLLM):
                     err = getattr(getattr(event, "response", None), "error", None)
                     raise _response_failure(err)
         except Exception as exc:
-            if streamed:
+            # what the person already saw is not shown twice: text, or the thinking streamed live
+            if streamed or shown_reasoning:
                 raise PartialStreamError(
                     "the model stream failed after visible text was shown; it was not retried"
                 ) from exc

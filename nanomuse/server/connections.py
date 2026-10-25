@@ -701,6 +701,11 @@ class Connections:
         address and its key by reference, and ``provider``, ``base_url`` and ``api_key`` in
         the body are ignored; the other fields apply as always."""
         llm = dict(self.data.get("llm") or {})
+        # what the slot pointed at before this save: the preset ids share one protocol
+        # name ("openai"), so the address is what tells two providers apart
+        prev = self.data.get("llm") or {}
+        prev_provider = prev.get("provider")
+        prev_base_url = normalize_base_url(str(prev.get("base_url") or ""))
         body = dict(body)
         if body.get("endpoint"):
             fields = self.endpoints.slot_fields(str(body["endpoint"]))
@@ -734,6 +739,20 @@ class Connections:
         elif api_key == "":
             # an explicitly empty key: no key at all (local models)
             self.vault.delete(LLM_KEY)
+            llm["api_key"] = ""
+        elif (
+            not body.get("endpoint")
+            and prev_provider
+            and (
+                prev_provider != llm.get("provider")
+                or prev_base_url != normalize_base_url(str(llm.get("base_url") or ""))
+            )
+        ):
+            # the provider changed and no key was typed: the key in the vault is the
+            # previous provider's, so keeping the reference would send one provider's
+            # key to another. No key is the honest state; the vault entry is left alone
+            # because it still belongs to the provider it was saved for. An endpoint
+            # (``body["endpoint"]``) sets its own reference above and is left as it is.
             llm["api_key"] = ""
         self.data["llm"] = llm
         self._save()

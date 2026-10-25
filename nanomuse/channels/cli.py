@@ -91,7 +91,14 @@ class _Server:
 
         try:
             response = httpx.request(
-                method, self.base + path, json=body, headers=self.headers, timeout=15
+                method,
+                self.base + path,
+                json=body,
+                headers=self.headers,
+                timeout=15,
+                # this is this machine's own server: the environment's proxy has no part in it,
+                # and the token in the headers would be the first thing it read
+                trust_env=False,
             )
         except httpx.ConnectError:
             return None

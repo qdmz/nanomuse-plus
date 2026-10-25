@@ -76,6 +76,8 @@ class Triggers(BaseTool):
             a.risk = RiskLevel.MODERATE
             detail = f"{args.get('kind') or '?'} “{args.get('match') or '*'}”: {str(args.get('text') or '')[:60]}"
         elif action == "cancel":
+            # and taking one away is a change too: the standing work stops happening
+            a.risk = RiskLevel.MODERATE
             detail = str(args.get("trigger_id") or "")
         else:
             detail = ""

@@ -2,7 +2,9 @@
 
 The first look only records where the inbox ends, so connecting a mailbox never replays
 a thousand old messages through the triggers. Each later look fetches what arrived since,
-newest last, capped so a burst cannot start dozens of runs.
+oldest first, at most MAX_PER_LOOK of them so a burst cannot start dozens of runs at once;
+the mark moves to the last one looked at, and the rest come with the next look. Nothing
+that arrived is skipped.
 """
 
 from __future__ import annotations
@@ -90,7 +92,7 @@ class MailWatcher:
                 newest = max(uids, default=0)
                 if last_uid <= 0:
                     return [], newest
-                fresh = sorted(u for u in uids if u > last_uid)[-MAX_PER_LOOK:]
+                fresh = sorted(u for u in uids if u > last_uid)[:MAX_PER_LOOK]
                 out: list[NewMail] = []
                 for uid in fresh:
                     status, parts = imap.uid("fetch", str(uid), "(RFC822)")
@@ -111,7 +113,9 @@ class MailWatcher:
                             body=body,
                         )
                     )
-                return out, max(newest, last_uid)
+                # the mark: the last UID of this batch when there was one (what came after it
+                # is for the next look), else where the inbox ends now
+                return out, max(fresh) if fresh else max(newest, last_uid)
 
         try:
             return await asyncio.to_thread(_look)

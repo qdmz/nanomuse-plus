@@ -68,6 +68,17 @@ def pdf_text(path: Path, max_pages: int = 60) -> str:
 SEARCH_MAX_ENTRIES = 50_000
 
 
+def shown_path(path: Path, workspace: Path) -> str:
+    """``path`` as the report names it: relative to the workspace when it is inside it, the
+    absolute path otherwise. An extra root on another drive has no relative form on Windows
+    (``os.path.relpath`` raises "path is on mount 'D:', start on mount 'C:'"), and by the
+    time the name is written the file is already on disk."""
+    try:
+        return os.path.relpath(path, workspace)
+    except ValueError:
+        return str(path)
+
+
 class Files(BaseTool):
     name: str = "files"
     description: str = (
@@ -174,7 +185,7 @@ class Files(BaseTool):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with target.open("a" if action == "append" else "w", encoding="utf-8") as fh:
                     fh.write(content)
-                rel = os.path.relpath(target, self.workspace)
+                rel = shown_path(target, self.workspace)
                 note = " (the content had escaped newlines; written as lines)" if fixed else ""
                 return ToolResult(
                     output=f"{'Appended' if action == 'append' else 'Wrote'} {len(content)} chars "

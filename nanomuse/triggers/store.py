@@ -298,6 +298,10 @@ class TriggerStore:
         )
         self._conn.commit()
 
+    def delete_meta(self, key: str) -> None:
+        self._conn.execute("DELETE FROM meta WHERE key=?", (key,))
+        self._conn.commit()
+
 
 def _from_row(row: sqlite3.Row) -> Trigger:
     return Trigger(

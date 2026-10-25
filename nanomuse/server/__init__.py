@@ -59,11 +59,12 @@ def port_taken(host: str, port: int, timeout: float = 0.5) -> str | None:
     except OSError:
         return None
     import json
-    import urllib.request
+
+    from nanomuse.local_http import local_open
 
     base = f"http://[{where}]:{port}" if ":" in where else f"http://{where}:{port}"
     try:
-        with urllib.request.urlopen(f"{base}/api/health", timeout=timeout * 4) as response:  # noqa: S310
+        with local_open(f"{base}/api/health", timeout=timeout * 4) as response:
             health = json.loads(response.read().decode("utf-8"))
     except Exception:  # noqa: BLE001 - not HTTP, not JSON, not answering: not ours
         return "another program"
@@ -82,7 +83,9 @@ def serve(
     """Run the app server (blocking). Prints the URL and a QR code for your phone."""
     import uvicorn
 
-    _utf8_console()
+    from nanomuse.stdio import utf8_console
+
+    utf8_console()
     ensure_ca_bundle()
     # Windows: asyncio's self-pipe is a loopback connection; on a machine that intercepts
     # those the loop would never start. Say so and stop, rather than listen on nothing.
@@ -170,17 +173,6 @@ def _dump_threads(why: str) -> None:
         lines.extend(line.rstrip() for line in traceback.format_stack(frame))
     with contextlib.suppress(Exception):
         print("\n".join(lines), file=sys.stderr, flush=True)
-
-
-def _utf8_console() -> None:
-    """UTF-8 on stdout/stderr, line-buffered, whatever the console's code page: the frozen
-    runtime does not read ``PYTHONUTF8``/``PYTHONUNBUFFERED``, and a Windows log in GBK
-    with the banner's dashes mangled is what the desktop shell showed otherwise."""
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            with contextlib.suppress(Exception):
-                reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 
 def _print_banner(url: str, service: MuseService, print_qr: bool) -> None:

@@ -22,6 +22,7 @@ the person keeps the cursor.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ConfigDict
@@ -348,6 +349,10 @@ class ComputerAct(BaseTool):
                 return ToolResult.fail(str(exc))
             if end is None:
                 return ToolResult.fail("`drag` needs `x2`/`y2` or `box2` (where the drag ends)")
+            if screen is not None and not inside(end, screen, COMPUTER):
+                return ToolResult.fail(
+                    f"({end[0]:g},{end[1]:g}) is outside the {screen.width}×{screen.height} picture"
+                )
             params["x2"], params["y2"] = end
         if action == "scroll":
             raw_dy = kwargs.get("dy")
@@ -550,6 +555,9 @@ def _point(
             raise ValueError(f"`{kbox}` must be [x1, y1, x2, y2] in pixels of the picture") from exc
     if point is None:
         return None
+    if not (math.isfinite(point[0]) and math.isfinite(point[1])):
+        # NaN and infinity pass every comparison and would reach the device as they are
+        raise ValueError(f"`{kx}`/`{ky}` must be finite numbers")
     if norm and screen is not None and screen.width and screen.height:
         point = from_norm(point[0], point[1], screen.width, screen.height)
     return point

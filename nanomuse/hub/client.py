@@ -199,6 +199,7 @@ class HubClient:
     async def _run(self) -> None:
         delay = 1.0
         while not self._stop.is_set():
+            refused = False  # a bad key, a paused hub, a certificate: a minute, not a backoff
             try:
                 await self._session()
                 delay = 1.0
@@ -212,11 +213,11 @@ class HubClient:
                 reason = (exc.rcvd.reason if exc.rcvd else "") or ""
                 if code in (4001, 4002):  # bad key, bad device: no point retrying quickly
                     self._set_state("refused", reason or str(code))
-                    delay = 60.0
+                    refused = True
                 elif code == 4003 and reason == "hub_paused":
                     # the operator switched the hub off (docs/hub.md): wait, do not hammer
                     self._set_state("disconnected", "the relay's hub is paused")
-                    delay = 60.0
+                    refused = True
                 else:
                     self._set_state("disconnected", str(exc))
             except InvalidStatus as exc:
@@ -224,7 +225,7 @@ class HubClient:
                 status = exc.response.status_code
                 if status in (401, 403):
                     self._set_state("refused", f"HTTP {status}")
-                    delay = 60.0
+                    refused = True
                 else:
                     self._set_state("disconnected", f"HTTP {status}")
             except ssl.SSLCertVerificationError as exc:
@@ -234,7 +235,7 @@ class HubClient:
                     "disconnected",
                     f"the relay's certificate could not be verified here: {exc.verify_message or exc}",
                 )
-                delay = 60.0
+                refused = True
             except (InvalidURI, ValueError) as exc:
                 self.last_error = str(exc)
                 self._set_state("refused", str(exc))
@@ -251,11 +252,21 @@ class HubClient:
             finally:
                 self.connected.clear()
                 self._fail_all("disconnected", "the hub connection dropped")
+                # the calls this session was carrying out can answer nobody now: the relay
+                # told their callers `device_offline` the moment the socket went. A side
+                # chat a `task` started runs on in its thread (it is the person's own and
+                # syncs); what stops is the following and answering of it.
+                for t in [t for t in self._calls if not t.done()]:
+                    t.cancel()
             if self._stop.is_set():
                 break
+            if refused:
+                # a minute every time, as docs/hub.md says; the network's backoff below
+                # starts over once the relay lets the device in again
+                delay = 60.0
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._stop.wait(), delay)
-            delay = min(delay * 2, 30.0)
+            delay = 1.0 if refused else min(delay * 2, 30.0)
 
     async def _session(self) -> None:
         self._set_state("connecting", self.url)

@@ -146,7 +146,8 @@ class WebSearch(BaseTool):
 
     def assess(self, args: dict[str, Any]) -> CallAssessment:
         return CallAssessment(
-            risk=RiskLevel.SAFE,
+            # the query goes to the search service: a public fetch, not a read
+            risk=RiskLevel.MODERATE,
             egress=True,
             egress_target=self.provider.host,
             egress_configured=True,  # the owner picked the provider; the model cannot redirect it
