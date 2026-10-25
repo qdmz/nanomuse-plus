@@ -3,7 +3,16 @@
 Local patch (not upstream): an access token from ``/app/getAppAccessToken``, a
 gateway WebSocket (Hello → Identify with the C2C + group intents → heartbeat →
 dispatch), and REST sends. Direct messages arrive as ``C2C_MESSAGE_CREATE``,
-group @-messages as ``GROUP_AT_MESSAGE_CREATE``; replies carry the triggering
+group @-messages as ``GROUP_AT_MESSAGE_CREATE``, and — once the bot is granted
+full group-message access in the group settings — every other group message
+as ``GROUP_MESSAGE_CREATE`` (forwarded with ``mentioned=False``, so the
+manager's mention policy keeps the agent out of them). Full messages also run
+through the built-in group moderation below: an ad/spam hit is warned on the
+first offense (and recalled where the platform lets the bot — it refuses for
+the group owner's messages); on the second offense the group is asked to
+remove the member, because the platform's member-remove/mute APIs are
+invite-only (error 11253 for ordinary bots) and not available to this bot.
+Replies carry the triggering
 ``msg_id`` while QQ's passive-reply window is open and fall back to a plain
 send after it. Files go through the ``/v2/.../files`` upload (base64) and are
 delivered as rich-media messages (``msg_type`` 7).
@@ -23,6 +32,7 @@ import base64
 import itertools
 import json
 import mimetypes
+import re
 import secrets
 import time
 from contextlib import suppress
@@ -164,6 +174,18 @@ class QQChannel(Channel):
     fields = (
         Field("app_id", "AppID", required=True, help="The bot's AppID from q.qq.com"),
         Field("app_secret", "AppSecret", "secret", required=True, help="The bot's AppSecret from q.qq.com"),
+        Field(
+            "group_mod", "群管开关", "choice", choices=("on", "off"), default="on",
+            help="on：群内广告/刷屏第一次警告（并撤回），第二次移出本群。需机器人在群内为管理员、已开通全量消息，且群设置里给机器人开了「撤回成员消息/移除群成员」权限",
+        ),
+        Field(
+            "mod_keywords", "群管·额外广告关键词",
+            help="逗号分隔，与内置广告词库叠加判定",
+        ),
+        Field(
+            "mod_exempt", "群管·豁免成员",
+            help="逗号分隔的 member_openid，这些成员不被群管处置",
+        ),
     )
 
     def __init__(self, settings: dict[str, Any]):
@@ -179,6 +201,8 @@ class QQChannel(Channel):
         self._seq_counters: dict[str, Any] = {}
         self._last_msg: dict[str, tuple[str, float]] = {}  # chat_id -> (msg_id, when)
         self._bot_name = ""
+        self._mod_offenses: dict[tuple[str, str], list[float]] = {}  # (group, member) -> offense times
+        self._mod_recent: dict[tuple[str, str], list[float]] = {}  # (group, member) -> recent msg times
 
     # ------------------------------------------------------------------ token / REST
     async def _access_token(self) -> str:
@@ -329,7 +353,8 @@ class QQChannel(Channel):
                     message_id=str(d.get("id") or ""),
                 )
             )
-        elif t == "GROUP_AT_MESSAGE_CREATE":
+        elif t in ("GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"):
+            is_at = t == "GROUP_AT_MESSAGE_CREATE"
             author = d.get("author") or {}
             # group events carry member_openid (and id), not user_openid
             openid = str(author.get("member_openid") or author.get("user_openid") or author.get("id") or "")
@@ -337,11 +362,24 @@ class QQChannel(Channel):
             if not group:
                 return
             chat_id = f"g:{group}"
-            files = await self._attachments(d)
             self._remember(d, chat_id)
             text = str(d.get("content") or "").strip()
-            if text.startswith("@"):
-                # group messages arrive prefixed with the @-mention of the bot
+            sender_name = str(author.get("username") or "")
+            if not is_at:
+                # a full (non-@) group message: only delivered once the bot has
+                # full-message access in this group. Log it (this is also how a
+                # fresh grant is verified), run moderation over it, and forward
+                # it as not-mentioned — the manager's mention policy then keeps
+                # the agent from answering every group message.
+                logger.info(
+                    "qq: group message in {} from {}: {}",
+                    group[-6:], sender_name or openid[-6:], text[:60],
+                )
+                if await self._moderate(chat_id, group, openid, sender_name, str(d.get("id") or ""), text):
+                    return
+            files = await self._attachments(d) if is_at else []
+            if is_at and text.startswith("@"):
+                # group @-messages arrive prefixed with the @-mention of the bot
                 parts = text.split(None, 1)
                 text = parts[1] if len(parts) > 1 else ""
             self.bus.inbound(
@@ -349,11 +387,11 @@ class QQChannel(Channel):
                     channel=self.name,
                     chat_id=chat_id,
                     sender_id=openid,
-                    sender_name=str(author.get("username") or ""),
+                    sender_name=sender_name,
                     text=text,
                     files=files,
                     is_group=True,
-                    mentioned=True,
+                    mentioned=is_at,
                     message_id=str(d.get("id") or ""),
                 )
             )
@@ -384,6 +422,127 @@ class QQChannel(Channel):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("qq: attachment download failed: {}", exc)
         return files
+
+    # ------------------------------------------------------------------ group moderation
+    # Runs over full (non-@) group messages inside the channel, before the
+    # message reaches the manager: first offense warns in the group (recalling
+    # the message where the platform allows), second offense (within 7 days)
+    # asks the owner/admins to remove the member — the platform's remove/mute
+    # APIs are invite-only, see _moderate. Needs the bot to be a group admin
+    # and to have full-message access.
+    _MOD_STRONG = (
+        "博彩", "菠菜", "赌场", "赌博", "棋牌", "彩票", "刷单", "裸聊", "约炮",
+        "跑分", "洗钱", "卖号", "代充", "黑产", "四件套", "六合彩", "时时彩", "网赌",
+    )
+    _MOD_WEAK = (
+        "加微信", "加我微信", "私聊我", "兼职", "副业", "日赚", "月入", "返利",
+        "招商", "代理加盟", "免费领取", "限时优惠", "点击链接", "带你赚钱",
+        "投资理财", "微信号", "扫码进群", "拉人头", "v信", "薇信",
+    )
+    _MOD_URL = re.compile(
+        r"https?://|www\.|\b[a-z0-9][a-z0-9-]*\.(?:com|cn|net|top|xyz|vip|cc|io|me|link|club|online|site|shop|fun|icu)\b",
+        re.IGNORECASE,
+    )
+    _MOD_OFFENSE_WINDOW = 7 * 24 * 3600.0
+    _MOD_FLOOD_WINDOW = 60.0
+    _MOD_FLOOD_LIMIT = 6
+
+    def _mod_enabled(self) -> bool:
+        return str(self.settings.get("group_mod") or "on").strip().lower() not in ("off", "false", "0", "no")
+
+    def _mod_extra_words(self) -> tuple[str, ...]:
+        raw = str(self.settings.get("mod_keywords") or "").replace("，", ",")
+        return tuple(w.strip() for w in raw.split(",") if w.strip())
+
+    def _mod_is_ad(self, text: str) -> str | None:
+        extra = self._mod_extra_words()
+        for word in self._MOD_STRONG:
+            if word in text:
+                return f"关键词「{word}」"
+        weak = [w for w in self._MOD_WEAK + extra if w.lower() in text.lower()]
+        if len(weak) >= 2:
+            return "广告词组合：" + "、".join(weak[:3])
+        if weak and self._MOD_URL.search(text):
+            return f"链接+广告词「{weak[0]}」"
+        return None
+
+    async def _moderate(
+        self, chat_id: str, group: str, openid: str, sender_name: str, msg_id: str, text: str
+    ) -> bool:
+        """Deal with an ad/spam full-group message. True = consumed, do not forward."""
+        if not self._mod_enabled() or not openid:
+            return False
+        exempt = {
+            s.strip()
+            for s in str(self.settings.get("mod_exempt") or "").replace("，", ",").split(",")
+            if s.strip()
+        }
+        if openid in exempt:
+            return False
+        now = time.time()
+        key = (group, openid)
+        recent = [t for t in self._mod_recent.get(key, []) if now - t < self._MOD_FLOOD_WINDOW]
+        recent.append(now)
+        self._mod_recent[key] = recent
+        rule = self._mod_is_ad(text) if text else None
+        if rule is None and len(recent) >= self._MOD_FLOOD_LIMIT:
+            rule = f"刷屏（{self._MOD_FLOOD_WINDOW:.0f} 秒内 {len(recent)} 条）"
+        if rule is None:
+            return False
+        self._mod_recent[key] = []
+        offenses = [t for t in self._mod_offenses.get(key, []) if now - t < self._MOD_OFFENSE_WINDOW]
+        offenses.append(now)
+        self._mod_offenses[key] = offenses
+        count = len(offenses)
+        logger.info(
+            "qq mod: offense #{} by {} in group {} ({}): {!r}",
+            count, sender_name or openid, group[-6:], rule, text[:60],
+        )
+        recalled = False
+        if msg_id:
+            try:
+                await self._rest("DELETE", f"/v2/groups/{group}/messages/{msg_id}")
+                recalled = True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("qq mod: recall failed: {}", exc)
+        # NOTE: <@!openid> does not render as a mention in QQ group text
+        # messages (it shows as raw hex), so address the member by nickname.
+        who = f"@{sender_name}" if sender_name else "该成员"
+        if count >= 2:
+            # Kick via the batch-remove endpoint (as in NoneBot's official
+            # adapter). It needs the group's per-bot 「移除群成员」 admin
+            # permission; where that is off the platform refuses and we fall
+            # back to asking the owner/admins to remove the member.
+            kicked = False
+            try:
+                await self._rest(
+                    "POST",
+                    f"/v2/groups/{group}/batch_remove_members",
+                    {"member_openids": [openid], "add_to_member_blacklist": False},
+                )
+                kicked = True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("qq mod: remove failed for {}: {}", openid, exc)
+            if kicked:
+                self._mod_offenses.pop(key, None)
+                logger.info("qq mod: removed {} from group {}", openid, group[-6:])
+                notice = f"🚫 {who} 多次发布广告/违规信息（{rule}），已移出本群。"
+            else:
+                notice = (
+                    f"🚫 {who} 多次发布广告/违规信息（{rule}），已记满 {count} 次违规。"
+                    "请群主或管理员将其移出本群。（机器人自动移出未成功）"
+                )
+            with suppress(Exception):
+                await self.send(chat_id, notice)
+        else:
+            warn = f"⚠️ {who} 请勿在本群发布广告或刷屏（{rule}），"
+            warn += "本次消息已撤回，并记一次违规；" if recalled else "已记一次违规；"
+            warn += "再次违规将通知群主移出本群。"
+            try:
+                await self.send(chat_id, warn)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("qq mod: warning send failed: {}", exc)
+        return True
 
     @staticmethod
     def _passive_window(chat_id: str) -> float:
