@@ -54,6 +54,13 @@ _RETRYABLE = (
     EmptyCompletion,
 )
 
+# Failures worth replaying on the next fallback model: everything the
+# per-model retry already treats as transient, plus a 404 (the gateway does
+# not carry this model under that name). PartialStreamError is deliberately
+# absent — visible text already reached the user, replaying would duplicate
+# it — and so are 400s, which indict the request, not the model.
+_ROTATE_ON = _RETRYABLE + (openai.NotFoundError,)
+
 
 class OpenAIChatLLM(BaseLLM):
     name = "openai"
@@ -61,6 +68,10 @@ class OpenAIChatLLM(BaseLLM):
 
     def __init__(self, settings: LLMSettings, session_header: str = ""):
         self.settings = settings
+        # the rotation chain: the primary model, then its configured backups
+        self._models = [settings.model] + [
+            m for m in settings.fallback_models if m and m != settings.model
+        ]
         # a vendor that wants one id per conversation (the catalogue's `session_header`)
         # also wants the client's own name rather than the SDK's
         self.session_header = session_header
@@ -114,8 +125,48 @@ class OpenAIChatLLM(BaseLLM):
             lambda: len(params["messages"]),
             lambda: sum(1 for m in params["messages"] if isinstance(m.get("content"), list)),
         )
+        last_exc: Exception | None = None
+        for idx, model in enumerate(self._models):
+            params["model"] = model
+            try:
+                resp = await self._send_guarded(
+                    params, messages, tools, with_images, on_delta, on_reasoning_delta
+                )
+            except _ROTATE_ON as e:
+                last_exc = e
+                if idx + 1 < len(self._models):
+                    logger.warning(
+                        "model {} failed ({}); rotating to {}",
+                        model,
+                        (str(e).splitlines() or [type(e).__name__])[0][:160],
+                        self._models[idx + 1],
+                    )
+                continue
+            if idx:
+                logger.info(
+                    "answered by fallback model {} (primary {} failed)",
+                    model,
+                    self._models[0],
+                )
+            if with_images and self.vision_available is None:
+                self.vision_available = True
+            return resp
+        raise last_exc if last_exc is not None else RuntimeError("no model configured")
+
+    async def _send_guarded(
+        self,
+        params: dict[str, Any],
+        messages: list[Message],
+        tools: list[dict[str, Any]] | None,
+        with_images: bool,
+        on_delta: DeltaCallback | None,
+        on_reasoning_delta: DeltaCallback | None = None,
+    ) -> LLMResponse:
+        """One model attempt: ``_send`` plus the BadRequest translations (a
+        tools field the endpoint cannot take, images it refuses) that retry
+        the same model as-is."""
         try:
-            resp = await self._send(params, on_delta, on_reasoning_delta)
+            return await self._send(params, on_delta, on_reasoning_delta)
         except openai.BadRequestError as e:
             if tools and says_no_tools(str(e)):
                 raise ToolsUnsupported(str(e)) from e
@@ -131,9 +182,6 @@ class OpenAIChatLLM(BaseLLM):
                 params["messages"] = self._wire_messages(messages, False)
                 return await self._send(params, on_delta, on_reasoning_delta)
             raise
-        if with_images and self.vision_available is None:
-            self.vision_available = True
-        return resp
 
     def _wire_messages(self, messages: list[Message], with_images: bool) -> list[dict[str, Any]]:
         wire = messages if with_images or not has_images(messages) else without_images(messages)

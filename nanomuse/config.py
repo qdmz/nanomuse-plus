@@ -83,6 +83,12 @@ def resolve_provider(provider: str, base_url: str | None) -> tuple[str, str | No
 class LLMSettings(BaseModel):
     provider: str = "openai"
     model: str = "deepseek-flash"
+    # Ordered backups for the chat model, sharing this slot's endpoint and
+    # key (the usual case is a gateway that fronts many models): when the
+    # primary fails with a retryable error — connection failure, timeout,
+    # 429, 5xx, an empty completion, a missing model — the request is
+    # replayed on the next model before the error reaches the user.
+    fallback_models: list[str] = Field(default_factory=list)
     base_url: str | None = "https://api.deepseek.com"
     api_key: str = ""
     max_tokens: int = 4096
