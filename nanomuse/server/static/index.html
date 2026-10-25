@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1"
+    />
+    <meta name="theme-color" content="#ffffff" />
+    <script>
+      // light unless dark was chosen under Settings → Appearance (or "system"): applied
+      // before the first paint so a dark choice does not flash white
+      try {
+        var t = localStorage.getItem("nanomuse_theme") || "light";
+        if (t === "system") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.dataset.theme = t;
+        if (t === "dark") document.querySelector('meta[name="theme-color"]').setAttribute("content", "#181819");
+      } catch (e) {}
+    </script>
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="nanoMuse" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <title>nanoMuse</title>
+    <script type="module" crossorigin src="/assets/index-CISWQq2k.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/MuseHeader-HpUH_CuB.js">
+    <link rel="modulepreload" crossorigin href="/assets/external-link-BKVyFV8L.js">
+    <link rel="modulepreload" crossorigin href="/assets/Form-BYC3M7-O.js">
+    <link rel="modulepreload" crossorigin href="/assets/StarNudge-BI1wOmFY.js">
+    <link rel="modulepreload" crossorigin href="/assets/refresh-cw-jMUFYkdt.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-cfcM1xi3.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

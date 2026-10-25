@@ -1,0 +1,58 @@
+# nanoMuse in a container. The agent sees two mounts: /data (memory, goals,
+# vault, audit log, threads) and /workspace (its files). config/config.toml is
+# mounted read-only — run `nanomuse config init` on the host first.
+#
+#   cp .env.example .env && $EDITOR .env             # API key, NANOMUSE_SERVER_TOKEN
+#   docker compose up -d app                         # phone app on http://<host>:8787/#token=...
+#   docker compose run --rm muse                     # terminal chat
+#   docker compose run --rm muse run "plan my week"  # one task
+#   docker compose up -d daemon                      # advance goals on a timer, no UI
+
+services:
+  muse:
+    build:
+      context: .
+      args:
+        WITH_BROWSER: "1"
+    image: nanomuse:latest
+    env_file:
+      - path: .env
+        required: false
+    stdin_open: true
+    tty: true
+    command: ["chat"]
+    # the image's health check asks the server on :8787; chat and daemon run none
+    healthcheck:
+      disable: true
+    volumes:
+      - nanomuse-data:/data
+      - ./workspace:/workspace
+      - ./config/config.toml:/app/config/config.toml:ro
+    # Uncomment to make the container filesystem immutable apart from the mounts.
+    # read_only: true
+    # tmpfs: [/tmp]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  app:
+    extends: muse
+    stdin_open: false
+    tty: false
+    command: ["serve", "--host", "0.0.0.0", "--no-qr"]
+    healthcheck:
+      disable: false
+    ports:
+      - "8787:8787"
+    restart: unless-stopped
+
+  daemon:
+    extends: muse
+    stdin_open: false
+    tty: false
+    command: ["daemon", "--interval", "3600"]
+    restart: unless-stopped
+
+volumes:
+  nanomuse-data:

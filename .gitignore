@@ -1,0 +1,78 @@
+# local configuration & secrets
+config/config.toml
+config/*.local.toml
+.env
+.env.*
+*.env
+!.env.example
+# the phones' build-time values, copied from the .example beside each (docs/ios.md, android/BUILDING.md)
+android/src/ios/Configs/ProviderCustomization.xcconfig
+android/src/android/app/provider-customization.properties
+
+# runtime data
+workspace/
+*.db
+*.enc
+*.key
+audit.jsonl
+sessions/
+logs/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# typescript incremental build state (web/, harness/)
+*.tsbuildinfo
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# web app sources (the production build in nanomuse/server/static IS committed)
+web/node_modules/
+web/dist/
+web/.vite/
+npm-debug.log*
+
+# website: generated from web/ and docs/ by `npm run site:mascot` (see site/README.md)
+site/assets/
+# the docs site, built by pages.yml from website/ into site/docs/
+site/docs/
+
+# nanoMuse on DeepSeek Harness (harness/README.md): built by `pnpm build`, not committed
+harness/dsh-nanomuse/node_modules/
+harness/dsh-nanomuse/lib/
+
+# android app (the signing key lives outside the repo; see docs/android.md)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/keystore.properties
+# the Kotlin daemon's session files, beside the Gradle project (android/src/android)
+android/src/android/.kotlin/
+android/native/build/
+*.jks
+*.keystore
+*.apk
+*.aab
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# uv lockfile: the project installs with `uv pip install -e .`, not `uv sync`
+uv.lock
+
+# nanoMuse Cloud relay runtime data
+cloud/data/

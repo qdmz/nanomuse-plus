@@ -1,0 +1,42 @@
+# What never enters a build context rooted here: the runtime image (Dockerfile) copies
+# pyproject.toml, README.md, LICENSE, nanomuse/ and config/config.example.toml; the showcase's
+# Caddy image (demo/showcase/caddy/Dockerfile, built from this root too) copies demo/mobilegym/
+# and demo/showcase/site/. A pattern without `**/` matches at the root only (Go's
+# filepath.Match, not gitignore), so the caches are listed with it.
+.git
+.github
+.venv
+.env
+.env.*
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/*.egg-info
+**/node_modules
+workspace/
+config/config.toml
+config/*.local.toml
+tests/
+docs/
+dist/
+build/
+# the other trees: the Android and iPhone apps with their native builds, the desktop, the
+# relay, the web console's sources (its build is committed under nanomuse/server/static/),
+# the docs site, the project page
+android/
+harness/
+cloud/
+web/
+website/
+site/
+assets/
+scripts/
+CHANGELOG.md
+# the showcase's run-time directories (demo/showcase/.gitignore): the dataset, other sites
+demo/showcase/data/
+demo/showcase/site/dist/
+demo/showcase/sites.d/
+demo/showcase/www/
+demo/showcase/mobilegym/

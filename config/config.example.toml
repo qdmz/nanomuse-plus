@@ -1,0 +1,373 @@
+# nanoMuse configuration
+# Copy to config/config.toml (or ~/.nanomuse/config.toml) and edit.
+# String values may reference environment variables: "${VAR}" or "${VAR:-default}".
+
+# Where memory, goals, vault, audit log and sessions are stored.
+data_dir = "~/.nanomuse"
+log_level = "INFO"
+
+# ------------------------------------------------------------------------------
+# LLM: any OpenAI-compatible endpoint works. Pick ONE of the presets below.
+# ------------------------------------------------------------------------------
+[llm]
+# --- DeepSeek (default; V4.1 Flash) ---------------------------------------------
+provider = "openai"                 # "openai" = Chat Completions API; "openai_responses" = Responses API
+model = "deepseek-flash"
+base_url = "https://api.deepseek.com"
+api_key = "${DEEPSEEK_API_KEY}"
+
+# --- OpenAI --------------------------------------------------------------------
+# model = "gpt-5.6-sol"
+# base_url = "https://api.openai.com/v1"
+# api_key = "${OPENAI_API_KEY}"
+
+# --- Anthropic (OpenAI-compatible endpoint) ------------------------------------
+# model = "claude-fable-5-1"
+# base_url = "https://api.anthropic.com/v1"
+# api_key = "${ANTHROPIC_API_KEY}"
+
+# --- Ollama / vLLM / LM Studio (local, private) --------------------------------
+# model = "qwen3:32b"
+# base_url = "http://localhost:11434/v1"
+# api_key = "ollama"
+
+# --- OpenRouter ----------------------------------------------------------------
+# model = "deepseek/deepseek-flash"
+# base_url = "https://openrouter.ai/api/v1"
+# api_key = "${OPENROUTER_API_KEY}"
+
+# --- Any internal gateway that needs extra headers -----------------------------
+# model = "my-app-id"
+# base_url = "https://gateway.example.com/v1"
+# api_key = "${GATEWAY_API_KEY}"
+# extra_headers = { "X-End-User-Id" = "nanomuse" }
+
+# --- A ChatGPT plan instead of a key (`nanomuse chatgpt login` first) ----------
+# Covers chat and the hands; not pictures or clips. No base_url, no api_key.
+# provider = "chatgpt"
+# model = ""                        # empty → gpt-5.6-sol
+
+# --- A catalogue id as the provider (nanomuse/llm/providers.json) --------------
+# The endpoint and the default model come from the catalogue; only the key is yours.
+# provider = "bailian"
+# api_key = "${DASHSCOPE_API_KEY}"
+
+max_tokens = 4096
+temperature = 0.3
+timeout = 180
+max_retries = 5
+# Streaming shows text as it is generated. Some proxies/gateways that inline
+# "<think>…</think>" drop the first tokens after </think> when streaming; if the
+# beginning of replies goes missing, set stream = false (responses stay complete).
+stream = true
+# "auto" uses the provider's function-calling API and falls back to describing tools in
+# the prompt when the endpoint rejects `tools` (Ollama without a tool template).
+# "native" never falls back; "prompt" is for endpoints that silently ignore `tools`.
+tool_mode = "auto"
+# Pictures attached in chat go to the model as images. "auto": send them and, if the
+# endpoint refuses (DeepSeek, text-only models), send text only from then on and say so
+# once. "on": always. "off": never; the model gets the file names.
+vision = "auto"
+# Some DeepSeek thinking endpoints want reasoning_content echoed back with tool calls.
+pass_reasoning = false
+# extra_body = { "thinking" = { "type" = "enabled" } }
+# An HTTP(S) or SOCKS proxy for this slot's requests only, when this machine's network
+# cannot reach the provider directly; empty, the environment's HTTPS_PROXY applies.
+# Honoured by the ChatGPT sign-in too; never used for nanoMuse Cloud.
+# proxy = "http://127.0.0.1:7890"
+
+# ------------------------------------------------------------------------------
+[agent]
+name = "nanoMuse"
+max_steps = 30
+# workspace = "./workspace"     # the agent's files. Default: ./workspace when the current directory has one, else <data_dir>/workspace
+# Directories outside the workspace the files tool may use. Reads there count as
+# private data (taint tracking); writes there ask for approval.
+extra_roots = []                # e.g. ["~/Documents/notes"]
+language = "auto"               # "auto" | "zh" | "en" | ...
+max_context_messages = 80
+# Screenshots kept in the request: the newest N, older ones replaced by a note.
+# A long run of the hands sends the conversation again on every step; a dozen
+# full-size screenshots went past the relay's body limit (413). 0 keeps all.
+max_context_images = 4
+show_thinking = false
+# Free text about you, injected into the system prompt.
+user_profile = ""
+# Extra standing instructions.
+instructions = ""
+
+# ------------------------------------------------------------------------------
+# Sentinel: the gatekeeper between the agent and the world.
+# ------------------------------------------------------------------------------
+[sentinel]
+# ask    : safe/moderate actions run freely, sensitive ones need your approval (default)
+# strict : moderate AND sensitive actions need approval
+# auto   : approve everything except explicit deny rules (unattended runs)
+mode = "ask"
+always_ask_tools = ["send_email", "shell"]
+always_allow_tools = []
+deny_tools = []
+# Once the agent has read private data (email, memories, files outside the
+# workspace) it may only reach these hosts without asking.
+egress_allowlist = [
+  "duckduckgo.com", "*.duckduckgo.com",
+  "wikipedia.org", "*.wikipedia.org",
+  "github.com", "*.github.com", "*.githubusercontent.com",
+  "pypi.org", "*.pypi.org",
+]
+taint_tracking = true
+
+# Fine-grained rules (first match wins). `match` values are glob patterns on arguments.
+[[sentinel.rules]]
+tool = "shell"
+match = { command = "*rm -rf*" }
+action = "deny"
+reason = "recursive deletes are not allowed"
+
+[[sentinel.rules]]
+tool = "files"
+match = { action = "write", path = "*.env" }
+action = "ask"
+reason = "writing dotenv files"
+
+# ------------------------------------------------------------------------------
+[memory]
+enabled = true
+max_inject = 20          # memories injected into the system prompt
+# Recall by meaning, on top of keyword recall: memories are embedded once through an
+# OpenAI-compatible /embeddings endpoint and a message finds the ones that mean the same
+# thing, in any language. auto: use the model's endpoint when it has embeddings, keyword
+# recall when it does not (DeepSeek has none). on: insist, doctor fails otherwise. off.
+embeddings = "auto"
+# embedding_base_url = "http://127.0.0.1:11434/v1"   # Ollama next to DeepSeek, say
+# embedding_model = "qwen3-embedding:0.6b"           # empty → the endpoint's default
+# embedding_api_key = "{{vault:EMBEDDINGS_API_KEY}}"  # empty → the model's key
+
+# ------------------------------------------------------------------------------
+# Connectors
+# ------------------------------------------------------------------------------
+[connectors.email]
+enabled = false
+imap_host = "imap.gmail.com"
+imap_port = 993
+smtp_host = "smtp.gmail.com"
+smtp_port = 587
+smtp_starttls = true
+# Store with: nanomuse vault set EMAIL_ADDRESS ; nanomuse vault set EMAIL_PASSWORD
+address = "{{vault:EMAIL_ADDRESS}}"
+password = "{{vault:EMAIL_PASSWORD}}"
+scrub_secrets = true     # strip one-time codes / reset links before the model reads mail
+
+[connectors.calendar]
+enabled = false
+refresh_minutes = 30
+day_start = "09:00"      # working hours, for "when am I free"
+day_end = "18:00"
+# Private .ics links (Google: Settings → Integrate calendar → Secret address in iCal format;
+# Outlook: Shared calendars → Publish; iCloud: Share Calendar → Public Calendar) or .ics files.
+# The link is the secret: nanomuse vault set CALENDAR_WORK
+# [[connectors.calendar.feeds]]
+# name = "Work"
+# url = "{{vault:CALENDAR_WORK}}"
+
+[connectors.contacts]
+# The address book: .vcf exports (Google Contacts, iCloud, Outlook, a phone) as files or
+# links, plus the people the agent is told about in chat (<data_dir>/contacts.vcf).
+enabled = true
+# [[connectors.contacts.sources]]
+# name = "Google"
+# url = "~/Downloads/contacts.vcf"     # or a link: "{{vault:CONTACTS_GOOGLE}}"
+
+[connectors.search]
+# Who answers web_search. DuckDuckGo needs nothing but rate-limits now and then; Brave,
+# Tavily and Serply take a key, You.com takes one or goes without (100 a day), SearXNG the
+# URL of an instance you run (json among its formats). A failed search falls back to
+# DuckDuckGo once, with a note.
+provider = "duckduckgo"               # duckduckgo | brave | tavily | serply | you | searxng
+# api_key = "{{vault:SEARCH_API_KEY}}"  # brave / tavily / serply / you: nanomuse vault set SEARCH_API_KEY
+# base_url = "http://127.0.0.1:8080"    # searxng
+# fallback = false                      # a failed search fails instead of going to DuckDuckGo
+
+[skills]
+# How a job is done, written down once: folders with a SKILL.md (the Agent Skills format).
+# Eleven are built in; yours go in <data_dir>/skills (or `dir`), and a folder with the same
+# name as a built-in replaces it. In chat, "/trip-plan Kyoto in November" runs one.
+enabled = true
+# dir = "~/my-skills"
+# disabled = ["inbox-triage"]        # built-in skills to leave out of the model's list
+
+[sandbox]
+# Linux + bubblewrap (apt install bubblewrap): every shell / python_execute call runs in its
+# own namespace: only the workspace is writable, your home directory is not there, and
+# there is no network unless the command needs it. auto: use it when it works here (default);
+# bwrap: insist; off: run commands unboxed with the scrubbed environment only.
+mode = "auto"
+# Directories the box may use; the home directory as a whole stays out. share_read_only
+# for the programs, share for state a tool also writes (its login, a token it refreshes);
+# a directory under your home is also visible at the same place under the box's home.
+# share_read_only = ["~/.nvm"]        # e.g. node and the Feishu CLI (lark-cli), see docs/showcase.md
+# share = ["~/.lark-cli"]             # and its login
+
+[triggers]
+# Work that starts when something happens (set in chat or under Upcoming): a mail trigger
+# has the inbox looked at this often; a webhook refuses deliveries closer together than this.
+mail_poll_minutes = 5
+hook_min_seconds = 10
+
+[browser]
+enabled = false          # pip install "nanomuse[browser]" && playwright install chromium
+headless = true
+timeout_ms = 30000
+
+# ------------------------------------------------------------------------------
+# The phone: the agent reads a connected phone's screen and taps, types and swipes
+# in its apps (12306, WeChat, Alipay have no API). Off by default; the Phone card in
+# the app is the same switch. docs/gui.md explains what asks for approval.
+# ------------------------------------------------------------------------------
+[gui]
+enabled = false
+provider = "openai"      # openai | openai_responses, or a catalogue id (bailian, openrouter, …) that brings its endpoint
+model = ""               # empty → the chat provider's own hands model when it sees; else the account's; else the chat model
+# base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"   # e.g. 阿里云百炼 with model = "qwen3.8-27b"
+# api_key = "{{vault:GUI_API_KEY}}"
+max_steps = 0            # the most one phone task may take; 0 = no cap
+device_timeout_s = 20.0  # how long to wait for the phone to answer one request
+reconnect_grace_s = 30.0  # how long a running task waits for a phone whose connection dropped to come back; 0 = give up at once
+
+# ------------------------------------------------------------------------------
+# Hands on this computer: the screen and the mouse of the machine the runtime runs on
+# (docs/every-device.md). The model, the step cap and the sensitive words are [gui]'s.
+# ------------------------------------------------------------------------------
+[hands]
+enabled = false          # the switch is Devices → Hands on this computer in the app
+backend = "auto"         # auto | desktop | pyautogui | xdotool; auto takes the desktop app's hands when it started this runtime
+mode = "auto"            # auto | screen | window; window = one app's window on macOS, your own mouse untouched
+coords = "pixels"        # pixels | norm1000: what the model's x, y mean (pixels of the picture it saw, or a 0–1000 grid)
+max_image_width = 1600   # widest picture handed to the model; the screen itself is operated at full size
+settle_s = 0.6           # pause after each action before the next screenshot
+
+# ------------------------------------------------------------------------------
+# Pictures and clips: where the avatar studio draws when it is not the chat model's
+# host. All empty (the default): the chat provider's own picture model when it has one,
+# else the account's when signed in, else none. `provider` is a catalogue id
+# (nanomuse/llm/providers.json); base_url fills in from it. The app sets the same keys
+# through PUT /api/connections/image and /video (Connections → Making pictures / clips).
+# ------------------------------------------------------------------------------
+# [image]
+# provider = "bailian"              # bailian | zhipu | siliconflow | volcengine | openai | gemini | openrouter | xai
+# model = ""                        # empty → the catalogue's default for the provider
+# base_url = ""                     # instead of provider, for a host the catalogue does not list
+# api_key = "{{vault:IMAGE_API_KEY}}"   # empty → the chat model's key when the host is the same
+#
+# [video]
+# provider = "bailian"              # clips speak Bailian's video API this round
+# model = ""                        # empty → the catalogue's default (wan2.2-i2v-flash)
+# base_url = ""
+# api_key = "{{vault:VIDEO_API_KEY}}"
+
+# ------------------------------------------------------------------------------
+# MCP servers: reuse the ecosystem instead of writing connectors.
+# ------------------------------------------------------------------------------
+# [[mcp.servers]]
+# name = "filesystem"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "./workspace"]
+# risk = "moderate"                # safe | moderate | sensitive
+#
+# [[mcp.servers]]
+# name = "calendar"
+# url = "http://localhost:8000/mcp"
+# risk = "sensitive"
+# reads_private_data = true
+#
+# 高德地图 (Amap): places, routes, weather, distance; twelve tools, no browser, no phone.
+# Get a key at https://console.amap.com (Web 服务), keep it in the vault
+# (`nanomuse vault set AMAP_KEY`); url, args and env accept {{vault:NAME}}.
+# [[mcp.servers]]
+# name = "amap"
+# url = "https://mcp.amap.com/mcp?key={{vault:AMAP_KEY}}"
+# risk = "safe"
+# egress = true
+#
+# 12306 (trains in China): timetable, seats and prices, connections, stops; a community
+# server (https://github.com/Joooook/12306-mcp), no key, no login; it cannot book.
+# The `train-tickets` skill searches here and books on the phone only when told to.
+# [[mcp.servers]]
+# name = "12306"
+# command = "npx"
+# args = ["-y", "12306-mcp"]
+# risk = "safe"
+# egress = true
+#
+# 快递100 (parcels): where a parcel is, when it arrives, what shipping costs; the official
+# server (https://github.com/kuaidi100-api/kuaidi100-MCP). Paid per new tracking number, with
+# a free trial; the 授权 key from api.kuaidi100.com goes in the vault (`nanomuse vault set KUAIDI100_KEY`).
+# [[mcp.servers]]
+# name = "kuaidi100"
+# url = "https://api.kuaidi100.com/mcp/streamable?key={{vault:KUAIDI100_KEY}}"
+# risk = "safe"
+# egress = true
+# reads_private_data = true    # a tracking number and a phone number go out
+
+# ------------------------------------------------------------------------------
+# App server: `nanomuse serve` (the phone app)
+# ------------------------------------------------------------------------------
+[server]
+host = "127.0.0.1"       # 0.0.0.0 to open it on your Wi-Fi, then scan the QR code with your phone
+port = 8787
+auth = true              # access token in the link / QR code; keep it on
+token = ""               # empty → generated once, kept in <data_dir>/server_token
+approval_timeout = 3600  # seconds an approval card waits before it counts as "deny"
+cors_origins = []        # only for the Vite dev server of the web app, e.g. ["http://localhost:5173"]
+max_upload_mb = 25       # largest file the app may attach to a message
+update_check = true      # say under Settings → About when a newer release is out (the download index, then GitHub Releases; once a day; nothing is sent)
+start_grace = 4          # seconds the tools/MCP servers/cloud account may take before the app answers anyway (/api/health names the step still running)
+
+# ------------------------------------------------------------------------------
+# Conversation sync: what this device sends to and takes from the account
+# (the account-wide switch is Data controls → Sync; see docs/every-device.md)
+# ------------------------------------------------------------------------------
+[sync]
+# Off: only the main conversation travels; side chats stay on the device that
+# made them and no other device's arrive. On: this device's side chats go to the
+# account and the other devices' come here. The person's choice in *Data
+# controls → Also sync side chats* is kept in sync.json; this is its default.
+side_chats = false
+
+# ------------------------------------------------------------------------------
+# nanoMuse Cloud: the relay this runtime signs in to (docs/cloud.md)
+# ------------------------------------------------------------------------------
+[cloud]
+base_url = "https://cloud.nanomuse.cn"   # a relay you run yourself: its public address (docs/self-hosting.md)
+required = true          # the first run does not finish without an account; false for a runtime with no relay at all
+models = true            # the account's models as a source (the apps' "Use nanoMuse Cloud models" switch); false keeps the sign-in for sync and the devices only
+sync = true              # default for the account-wide Data controls → Sync switch (the person's choice, once made, counts)
+
+# ------------------------------------------------------------------------------
+# The hub: this computer as one of the account's devices (docs/hub.md)
+# ------------------------------------------------------------------------------
+[hub]
+enabled = true           # join the hub whenever the Cloud account is signed in
+remote_control = true    # false: other devices get `info` from this one and nothing else
+name = ""                # what the other devices call this one; empty = the host name
+# device_id is per installation and written by the app; leave it alone
+
+# --- [qdmz fork] image / video generation (Agnes AI, OpenAI-compatible) --------
+# Tools: generate_image / generate_video. Products land in workspace/images|videos
+# and are delivered into chat channels as real attachments.
+[image]
+base_url = "https://apihub.agnes-ai.com/v1"
+model = "agnes-image-2.5-flash"
+api_key = "${AGNES_API_KEY}"
+
+[video]
+base_url = "https://apihub.agnes-ai.com/v1"
+model = "agnes-video-2.5-flash"   # free tier (queue may be busy); agnes-video-2.5 is paid per second
+api_key = "${AGNES_API_KEY}"
+
+# --- [qdmz fork] example MCP server (agent-router) ------------------------------
+# [[mcp.servers]]
+# name = "agent-router"
+# url = "https://www.agent-router.org/mcp?apiKey=<YOUR_KEY>"
+# risk = "moderate"
+# egress = true

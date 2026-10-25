@@ -1,0 +1,11 @@
+# [qdmz deployment] localhost-only port for tunnel/reverse-proxy fronting.
+# Delete this file if you want the upstream default 8787:8787 public mapping.
+services:
+  muse:
+    build:
+      context: .
+      args:
+        WITH_BROWSER: "1"
+  app:
+    ports: !override
+      - "127.0.0.1:18787:8787"

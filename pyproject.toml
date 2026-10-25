@@ -1,0 +1,115 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nanomuse"
+version = "1.1.0"
+description = "nanoMuse: an open-source personal agent for every device you own. This is its runtime: the agent, the Sentinel that decides what may run, the hands that work a phone or a computer, and the web app. Bring your own model."
+readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.11"
+authors = [{ name = "nanoMuse Contributors" }]
+keywords = ["agent", "ai", "llm", "personal-assistant", "personal-agent", "muse", "meta-muse", "gui-agent", "mcp", "deepseek", "feishu", "amap"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "openai>=1.60",
+  "pydantic>=2.7",
+  "httpx>=0.27",
+  "typer>=0.12",
+  "rich>=13.7",
+  "loguru>=0.7",
+  "cryptography>=42",
+  "tenacity>=8.3",
+  "ddgs>=9.0",
+  "beautifulsoup4>=4.12",
+  "html2text>=2024.2.26",
+  "mcp>=1.2",
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "qrcode>=7.4",
+  "pywebpush>=2.0",
+  "python-dateutil>=2.9",
+  "pillow>=10",
+  "pypdf>=4",
+  # reading a dsh session store; its own compression.zstd arrives in Python 3.14, and this
+  # project supports 3.11 and up
+  "zstandard>=0.22",
+  # Windows has no system time-zone database; zoneinfo (the calendar, quiet hours) needs this one
+  "tzdata>=2024.1; platform_system == 'Windows'",
+]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.45"]
+# this computer's screen and hands (docs/every-device.md); xdotool works without them on X11
+hands = [
+    "mss>=9",
+    "Pillow>=10",
+    "pyautogui>=0.9.54",
+    "pyperclip>=1.8",
+    # macOS window mode (nanomuse/computer/mac_window.py): one app's window, events to its process
+    "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-ApplicationServices>=10; sys_platform == 'darwin'",
+]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5", "mypy>=1.10", "httpx>=0.27", "types-python-dateutil"]
+# chat apps (docs/channels.md); Telegram needs nothing beyond httpx
+feishu = ["lark-oapi>=1.5,<2"]
+dingtalk = ["dingtalk-stream>=0.24,<1"]
+wecom = ["wecom-aibot-sdk-python>=0.1.7,<0.2"]
+channels = ["nanomuse[feishu,dingtalk,wecom]"]
+all = ["nanomuse[browser,hands,dev,channels]"]
+
+[project.scripts]
+nanomuse = "nanomuse.cli:app"
+# the CLI bridge: for commands the agent runs (docs/local-runtime.md)
+nanomuse-device = "nanomuse.bridge.cli:device_main"
+nanomuse-browser = "nanomuse.bridge.cli:browser_main"
+nanomuse-open = "nanomuse.bridge.cli:open_main"
+
+[project.urls]
+Homepage = "https://nanomuse.cn"
+Documentation = "https://nanomuse.cn/docs/"
+Repository = "https://github.com/nano-muse/nanoMuse"
+Issues = "https://github.com/nano-muse/nanoMuse/issues"
+Changelog = "https://github.com/nano-muse/nanoMuse/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nanomuse"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"config/config.example.toml" = "nanomuse/config.example.toml"
+
+[tool.hatch.build.targets.sdist]
+include = ["nanomuse", "config/config.example.toml", "README.md", "docs/readme", "LICENSE"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501", "B008", "UP042"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["nanomuse"]
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unreachable = true
+# the mcp 1.x/2.x import fallback needs an ignore on whichever branch is not installed
+warn_unused_ignores = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = ["live: tests that call a real LLM endpoint (set NANOMUSE_LIVE=1)"]
